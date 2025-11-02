@@ -1,0 +1,29 @@
+{
+  "name": "file-host",
+  "version": "1.0.0",
+  "description": "a simple web server build with express.js for file sharing with your friends.",
+  "homepage": "https://github.com/qrlmza/file-host#readme",
+  "bugs": {
+    "url": "https://github.com/qrlmza/file-host/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qrlmza/file-host.git"
+  },
+  "license": "UNLICENSED",
+  "author": "selunik",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "compression": "^1.8.1",
+    "express": "^5.1.0",
+    "express-basic-auth": "^1.2.1",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "serve-index": "^1.9.1"
+  }
+}
