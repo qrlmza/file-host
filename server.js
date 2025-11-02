@@ -9,6 +9,7 @@ const basicAuth = require('express-basic-auth');
 const morgan = require('morgan');
 const path = require('path');
 const fs = require('fs').promises;
+require('dotenv').config({ quiet: true });
 
 const app = express();
 
@@ -34,7 +35,7 @@ app.use(
 
 app.use(
   basicAuth({
-    users: { root: 'motdepassefort' }, // change-moi
+    users: { root: process.env.SERVER_PASS }, // change-moi
     challenge: true,
     realm: 'RAR-Share',
   })
