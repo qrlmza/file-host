@@ -29,16 +29,17 @@ const SECTIONS = {
 // Buckets "jeux" (mode + chemin physique)
 const GAMES_BUCKETS = [
   { slug: 'solo',  dir: path.join(ROOT, 'games', 'solo'),  mode: 'solo' },
-  { slug: 'multi', dir: path.join(ROOT, 'games',  'multi'), mode: 'coop' },
+  { slug: 'multi', dir: path.join(ROOT, 'games', 'multi'), mode: 'coop' },
 ];
 
-// On pointe /games vers ROOT mais on filtrera ensuite
+// /games pointe vers files/games
 SECTIONS['/games'] = path.join(ROOT, 'games');
 
 // --------- Middlewares de base ---------
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'same-site' } }));
 app.use(compression());
-app.use(morgan('combined'));
+// désactivé pour ne pas avoir de logs
+// app.use(morgan('combined'));
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -76,6 +77,22 @@ function formatSizeFR(bytes) {
 function fmtDateFR(d) {
   const fmt = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
   return fmt.format(d);
+}
+
+// Normalisation pour comparaison sans casse ni accents
+function noDiacritics(s) {
+  try {
+    return s.normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  } catch {
+    // fallback sans propriétés Unicode
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+}
+function matchesQuery(name, q) {
+  if (!q) return true;
+  const a = noDiacritics(String(name).toLowerCase());
+  const b = noDiacritics(String(q).toLowerCase());
+  return a.includes(b);
 }
 
 // Trouver la section (/games ou /docs) et la racine physique associée
@@ -151,7 +168,6 @@ app.get('/', (_req, res) => {
     background:#2a2a2a;
   }
   .btn:hover{ background:#353535; border-color:#ffffff66; }
-  .btn svg{width:20px; height:20px;}
 </style>
 </head>
 <body>
@@ -203,19 +219,20 @@ app.use(async (req, res, next) => {
   }
 });
 
-// --------- Index HTML de section ---------
+// --------- Index HTML de section (avec recherche via ?q=) ---------
 app.use(async (req, res, next) => {
   const sectionKey = matchSection(req.path);
   if (!sectionKey) return next();
 
   try {
+    const q = (req.query && typeof req.query.q === 'string') ? req.query.q.trim() : '';
     const sectionRoot = SECTIONS[sectionKey];
     const rel = req.path.slice(sectionKey.length) || '/';
 
     // Cas spécial: /games (racine) -> vue agrégée solo + multi
     if (sectionKey === '/games' && (rel === '/' || rel === '')) {
       // Construit une "rows" virtuelle depuis les deux dossiers
-      const rows = [];
+      let rows = [];
       for (const b of GAMES_BUCKETS) {
         let list = [];
         try {
@@ -241,19 +258,25 @@ app.use(async (req, res, next) => {
         }
       }
 
+      // Filtre par recherche
+      if (q) rows = rows.filter(r => matchesQuery(r.name, q));
+
+      // Tri: alpha
       rows.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 
-      const crumbs = ['<a href="/">Accueil</a>', '<a href="/games/">games</a>'];
+      // Fil d’Ariane
+      const crumbs = ['<a href="/">Accueil</a>', `<a href="/games/">games</a>`];
 
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.removeHeader('Content-Disposition');
 
       return res.send(renderTableHtml({
-        title: '/games',
-        heading: '⚡ games →',
+        title: q ? `/games — recherche: ${q}` : '/games',
+        heading: '🎮 games',
         breadcrumbsHtml: crumbs.join(' &raquo; '),
         rows,
         showMode: true,
+        search: { q, placeholder: 'Rechercher un jeu…' },
       }));
     }
 
@@ -276,7 +299,7 @@ app.use(async (req, res, next) => {
 
     const list = await fs.readdir(abs, { withFileTypes: true });
 
-    const rows = [];
+    let rows = [];
     for (const e of list) {
       const full = path.join(abs, e.name);
       let s;
@@ -299,10 +322,14 @@ app.use(async (req, res, next) => {
         isDir,
         size: isDir ? null : s.size,
         mtime: s.mtime,
-        mode: isDir ? null : mode, // on n’affiche que sur les fichiers
+        mode: isDir ? null : mode, // badge seulement sur les fichiers
       });
     }
 
+    // Filtre par recherche (répertoires ET fichiers)
+    if (q) rows = rows.filter(r => matchesQuery(r.name, q));
+
+    // Tri: dossiers d'abord, puis alpha
     rows.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name, 'fr'));
 
     // Fil d’Ariane
@@ -319,13 +346,14 @@ app.use(async (req, res, next) => {
     res.removeHeader('Content-Disposition');
 
     return res.send(renderTableHtml({
-      title: decoded,
-      heading: `⚡ ${escapeHtml(parts[0] || '')} →`,
+      title: q ? `${decoded} — recherche: ${q}` : decoded,
+      heading: `🎮 ${escapeHtml(parts[0] || '')}`,
       breadcrumbsHtml: crumbs.join(' &raquo; '),
       rows,
       showMode: true, // on affiche la colonne, badge seulement si r.mode défini
       parentLinkHtml: (decoded !== `/${parts[0]}/` && decoded !== `/${parts[0]}`)
         ? `<tr><td class="name"><a href="../" class="label">../</a></td><td class="mode"></td><td></td><td></td></tr>` : '',
+      search: { q, placeholder: 'Rechercher…' },
     }));
   } catch (e) {
     next(e);
@@ -360,7 +388,13 @@ function renderTableHtml({
   rows,
   showMode = true,
   parentLinkHtml = '',
+  search = { q: '', placeholder: 'Rechercher…' }
 }) {
+  const count = rows.length;
+  const q = (search?.q || '').trim();
+  const clearLink = q ? `<a class="clear" href="?">Effacer</a>` : '';
+  const hint = q ? `<span class="hint">${count} résultat${count>1?'s':''}</span>` : '';
+
   return `<!doctype html>
 <html lang="fr">
 <head>
@@ -370,8 +404,24 @@ function renderTableHtml({
 <style>
   :root { color-scheme: light dark; }
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu; margin:24px; line-height:1.35; background-color:#1C1C1C; color:#fefefe;}
-  header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap;}
-  table{border-collapse:collapse; width:100%;}
+  header{display:flex;justify-content:space-between;align-items:end;gap:16px;margin-bottom:12px;flex-wrap:wrap;}
+  .left{display:flex;flex-direction:column;gap:6px;min-width:260px;}
+  .right{display:flex;align-items:center;gap:8px;min-width:260px;justify-content:flex-end;flex-wrap:wrap;}
+  h1{margin:0;font-size:22px}
+  nav{opacity:.9}
+  form.search{display:flex;gap:8px;align-items:center}
+  .search input{
+    background:#2a2a2a; color:#fefefe; border:1px solid #ffffff33; border-radius:8px;
+    padding:10px 12px; min-width:260px; outline:none;
+  }
+  .search input:focus{ border-color:#ffffff66; }
+  .search button{
+    background:#DD3A44; color:#fff; border:none; border-radius:8px; padding:10px 12px; cursor:pointer;
+  }
+  .search .clear{color:#fefefe99; text-decoration:none}
+  .search .clear:hover{text-decoration:underline}
+  .hint{opacity:.7}
+  table{border-collapse:collapse; width:100%; margin-top:10px;}
   th,td{padding:8px 10px; border-bottom:1px solid #f1f1f1;}
   th{background:#800020; text-align:left;}
   td.name{display:flex; align-items:center; gap:10px; min-width:0;}
@@ -398,19 +448,29 @@ function renderTableHtml({
   }
   /* Badges */
   .badge{display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; letter-spacing:.2px;}
-  .badge.coop{background:#dd3a4560; color:#fefefe; border: solid 1px #DD3A44; padding-left: 10px; padding-right: 10px; padding-top: 2px; padding-bottom: 4px;}
-  .badge.solo{background:#dd3a4560; color:#fefefe; border: solid 1px #DD3A44; padding-left: 10px; padding-right: 10px; padding-top: 2px; padding-bottom: 4px;}
+  .badge.coop{background:#1e7f33; color:#fff;}
+  .badge.solo{background:#b58a00; color:#1C1C1C;}
 </style>
 </head>
 <body>
   <header>
-    <h1 style="color:#fefefe;">${heading}</h1>
-    <nav style="color:#fefefe;">${breadcrumbsHtml}</nav>
+    <div class="left">
+      <h1>${escapeHtml(heading)}</h1>
+      <nav>${breadcrumbsHtml}</nav>
+    </div>
+    <div class="right">
+      <form class="search" method="get" action="">
+        <input type="search" name="q" placeholder="${escapeHtml(search?.placeholder || 'Rechercher…')}" value="${escapeHtml(q)}" />
+        <button type="submit">Rechercher</button>
+        ${clearLink}
+        ${hint}
+      </form>
+    </div>
   </header>
 
   <table>
     <thead>
-      <tr style="color:#fefefe;">
+      <tr>
         <th>Nom</th>
         ${showMode ? '<th class="mode">Mode</th>' : ''}
         <th class="size">Taille</th>
@@ -420,7 +480,7 @@ function renderTableHtml({
     <tbody>
       ${parentLinkHtml}
       ${rows.map(r => `
-        <tr style="color:#fefefe;">
+        <tr>
           <td class="name">
             ${r.isDir ? '' : `
               <a class="dl-btn" href="${r.href}" title="Télécharger ${escapeHtml(stripSlash(r.name))}" aria-label="Télécharger ${escapeHtml(stripSlash(r.name))}">
@@ -458,6 +518,7 @@ function escapeHtml(s) {
 function stripSlash(name) {
   return name.endsWith('/') ? name.slice(0, -1) : name;
 }
+
 async function dirExists(p) {
   try { const s = await fs.lstat(p); return s.isDirectory(); }
   catch { return false; }
